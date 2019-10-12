@@ -17,9 +17,12 @@ class data_adress():
         self.label_column_names = ["id", "age", "gender", "symptom1", "symptom2", "symptom3", "symptom4", "symptom5",
                                       "symptom6", "symptom7", "symptom8"]  # label的列标签名字
         self.hf_terecords_data = "./hf_terecords"  # 存储训练数据样本和标签的tfrecords文件夹
+
     def label(self):
         # 标签数据处理
-        hf_label = pd.read_csv(self.label_path, sep="\t", names=self.label_column_names)  # 标签数据
+        hf_label = pd.read_csv("./test_data/hefei_data/hf_round1_label.txt", sep="\t", names=["id", "age", "gender", "symptom1", "symptom2", "symptom3", "symptom4", "symptom5",
+                                      "symptom6", "symptom7", "symptom8"])  # 标签数据
+        print(hf_label)
         gender = {"FEMALE": 0, "MALE": 1}  # 定义map，女性为0，男性为1
         hf_label["gender"] = hf_label["gender"].map(gender)
         hf_label[["age", "gender"]] = hf_label[["age", "gender"]].fillna(-1)  # 处理nan值，缺失值填充-1
@@ -94,14 +97,14 @@ class data_adress():
                 print(y_train)
                 example = tf.train.Example(features=tf.train.Features(feature={
                     "x_train":tf.train.Feature(bytes_list=tf.train.BytesList(value=[x_train])),
-                    "y_train":tf.train.Feature(int64_list=tf.train.Int64List(value=[y_train]))
+                    "y_train":tf.train.Feature(bytes_list=tf.train.BytesList(value=[y_train]))
                 }))  # 构造每个样本的example协议
                 tfrecords_writer.write(example.SerializeToString())  # 写入tfrecords
 
     def read_hf_tfcords(self):
         """读取保存的tfcords文件"""
         # 文件队列
-        hf_tfrecords_queue = tf.train.string_input_producer(["./hf_train_data.tfrecords"])
+        hf_tfrecords_queue = tf.train.string_input_producer(["hf_tfrecords/hf_train_data.tfrecords"])
         # tfcords读写器
         tfrecords_reader = tf.TFRecordReader()
         # 读取内容
@@ -113,10 +116,19 @@ class data_adress():
         })
         # 解码string类型
         x_train = tf.reshape(tf.decode_raw(features["x_train"], tf.float32), [5000*12])
-        y_train = tf.reshape(tf.decode_raw(features["y_train"], tf.float32),[55])
+        y_train = tf.reshape(tf.decode_raw(features["y_train"], tf.float32), [55])
         # 批量处理样本数据
-        x_batch_train, y_batch_train = tf.train.shuffle_batch([x_train, y_train], batch_size=50, capacity=2000, min_after_dequeue=1000,num_threads=4)
-
+        x_batch_train, y_batch_train = tf.train.shuffle_batch([x_train, y_train], batch_size=1, capacity=2000,
+                                                              min_after_dequeue=1000, num_threads=4)
+        # with tf.Session() as sess:
+        #     coord = tf.train.Coordinator()
+        #     thread = tf.train.start_queue_runners(sess, coord=coord)
+        #     for i in range(5):
+        #         x_batch, y_batch = sess.run([x_batch_train, y_batch_train])
+        #         print(x_batch)
+        #         # print(y_batch)
+        #     coord.request_stop()
+        #     coord.join(thread)
         return x_batch_train, y_batch_train
 
     def weight_bias(self,weight_shape, bias_shape):
@@ -126,53 +138,83 @@ class data_adress():
            :param bias_shape: bias形状
            :return: weight bias
         """
-        weight = tf.random_normal(weight_shape)  # 权重
-        bias = tf.random_normal(bias_shape)  # 偏置
+        weight = tf.Variable(tf.random_normal(weight_shape)) # 权重
+        bias = tf.Variable(tf.random_normal(bias_shape))  # 偏置
         return weight,bias
 
     def conv(self):
         # 进行卷积层优化
         weight1, bias1 = self.weight_bias([5,5,1,32],[32])  # 第一次卷积的weight and bias
         x1 = tf.reshape(self.x_train, [-1, 5000,12,1])  # 修改特征值的形状和weight对应
-        conv1 = tf.nn.conv2d(x1,filter=weight1,strides=[1,1,1,1],padding="SAME",name="conv1")  # 卷积
+        conv1 = tf.nn.conv2d(x1,filter=weight1,strides=[1,1,1,1],padding="SAME",name="conv1") + bias1 # 卷积
         relu1 = tf.nn.relu(features=conv1)  # relu激活函数
-        pool1 = tf.nn.max_pool(relu1,ksize=[1,20,1,1], strides=[1,1,1,1],padding="SAME")  # 池化
+        pool1 = tf.nn.max_pool(relu1,ksize=[1,10,2,1], strides=[1,10,2,1],padding="SAME")  # 池化
 
         weight2, bias2 = self.weight_bias([5, 5, 32, 64], [64])  # 第一次卷积的weight and bias
-        conv2 = tf.nn.conv2d(pool1, filter=weight1, strides=[1, 1, 1, 1], padding="SAME", name="conv1")  # 卷积
+        conv2 = tf.nn.conv2d(pool1, filter=weight2, strides=[1, 1, 1, 1], padding="SAME", name="conv1")  # 卷积
         relu2 = tf.nn.relu(features=conv2)  # relu激活函数
-        pool2 = tf.nn.max_pool(relu2, ksize=[1, 20, 1, 1], strides=[1, 1, 1, 1], padding="SAME")  # 池化
+        pool2 = tf.nn.max_pool(relu2, ksize=[1, 10, 2, 1], strides=[1, 10, 2, 1], padding="SAME")  # 池化
         return pool2
 
     def tf_data(self):
         # 准备tensorflow数据占位符,每个样本5000rows*12columns  55个目标值
-        x_train = self.conv()
-        x_train = tf.reshape(x_train,[-1,x_train.shape[1]*x_train.shape[2]*x_train.shape[3]])
-        y_train = self.y_train
-        weights = tf.Variable(tf.random_normal([5000* 12, 55]))  # 随机权重值
-        bias = tf.Variable(tf.random_normal([55]))  # 随机偏重值
-        y_predict = tf.matmul(x_train, weights) + bias  # 进行全链接计算
-        loss = tf.nn.l2_loss(tf.subtract(y_predict, y_train))  # 计算误差
-        train_loss = tf.train.GradientDescentOptimizer(0.0000000001).minimize(loss)  # 进行梯度下降，降低误差
+        with tf.variable_scope("data"):
+            # 准备数据
+            x_train = self.x_train
+            y_train = self.y_train
+        # with tf.variable_scope("conv"):
+        #     # 卷积
+        #     pool2 = self.conv()
+        #     x_shape = pool2.shape[1]*pool2.shape[2]*pool2.shape[3]
+        #     conv_x = tf.reshape(pool2, [-1, int(x_shape)])
+            # print(conv_x)
+        # with tf.variable_scope("weight_scope"):
+        #     # weight and bias
+        #     weights = tf.Variable(tf.random_normal([int(x_shape), 55]))  # 随机权重值
+        #     bias = tf.Variable(tf.random_normal([55]))  # 随机偏重值
+        with tf.variable_scope("weight_scope"):
+            # weight and bias
+            weights = tf.Variable(tf.random_normal([5000*12, 55]))  # 随机权重值
+            bias = tf.Variable(tf.random_normal([55]))  # 随机偏重值
+        with tf.variable_scope("nn_count"):
+            # 进行预测和损失值计算，以及梯度下架损失值
+            y_predict = tf.matmul(x_train, weights) + bias  # 进行全链接计算
+            loss = tf.nn.l2_loss(tf.subtract(y_predict, y_train))  # 计算误差
+            train_loss = tf.train.GradientDescentOptimizer(0.000000000000000000001).minimize(loss)  # 进行梯度下降，降低误差
+        # with tf.variable_scope("nn_count"):
+        #     # 进行预测和损失值计算，以及梯度下架损失值
+        #     y_predict = tf.matmul(conv_x, weights) + bias  # 进行全链接计算
+        #     loss = tf.nn.l2_loss(tf.subtract(y_predict, y_train))  # 计算误差
+        #     train_loss = tf.train.GradientDescentOptimizer(0.000000000000000000001).minimize(loss)  # 进行梯度下降，降低误差
+
         init_v = tf.global_variables_initializer()  # 初始化变量
         print("*"*10)
-        x_batch_train, y_batch_train = self.read_hf_tfcords()
-        # print(x_batch_train)
+        with tf.variable_scope("summary"):
+            # 收集变量
+            tf.summary.scalar("loss", loss)  # 损失值
+            tf.summary.histogram("weights", weights)  # 权重
+            tf.summary.histogram("bias", bias)  # 偏置
+            merged = tf.summary.merge_all()
+        with tf.variable_scope("origin_data"):
+            # 准备原始数据
+            x_batch_train, y_batch_train = self.read_hf_tfcords()
         with tf.Session() as sess:
             sess.run(init_v)  # 初始化变量
+            summary_writer = tf.summary.FileWriter("./summary/")  # 存放变量
             coord = tf.train.Coordinator()  # 线程协调器
-            thread = tf.train.start_queue_runners(coord=coord, sess=sess)
-            for i in range(40000):
+            thread = tf.train.start_queue_runners(coord=coord, sess=sess)  # 线程读取
+            for i in range(40000):  # 训练步数
                 print("-"*10)
                 # sess.run(train_loss)
                 # print(x_batch_train, y_batch_train)
                 x_batch, y_batch = sess.run([x_batch_train, y_batch_train])
-                # print(x_batch)
                 feed_dict = {
                     x_train: x_batch,
                     y_train: y_batch}
-                sess.run(train_loss, feed_dict=feed_dict)
-                print(sess.run(loss,feed_dict=feed_dict))
+                sess.run(train_loss, feed_dict=feed_dict)  # 梯度下降
+                print(sess.run(loss, feed_dict=feed_dict))  # 损失值
+                sess_merged = sess.run(merged, feed_dict=feed_dict)  # 收集变量
+                summary_writer.add_summary(sess_merged, i)  # 添加变量
             coord.request_stop()
             coord.join(thread)
 
